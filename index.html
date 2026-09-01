@@ -337,6 +337,11 @@
         <input type="range" id="serverPrice_r" min="100000" max="1200000" step="10000">
       </div>
       <div class="drv">
+      <div class="drv" id="drv_gpurent">
+        <div class="row"><label>GPU rent — from GaaS<span class="hint">wholesale rate, all-in</span><span class="ttip" data-tip="What GaaS charges for a GPU-hour on a committed contract. The rate already carries the hall, the power, the upkeep and the NVIDIA licence, so none of those appear again below.">ⓘ</span></label>
+          <div class="val"><input type="number" id="gpuRentHr" step="0.1"><span class="unit">$ / GPU&#183;hr</span></div></div>
+        <input type="range" id="gpuRentHr_r" min="1" max="20" step="0.1">
+      </div>
         <div class="row"><label>Number of GPUs<span class="hint" id="srvNote">8-GPU HGX B300 nodes</span><span class="ttip" data-tip="Total GPU count, stepped in 1,024 (128 nodes × 8). Internally converted to whole servers. Drives capex, power and MW.">ⓘ</span></label>
           <div class="val"><input type="number" id="gpuCount" step="1024"><span class="unit">GPUs</span></div></div>
         <input type="range" id="gpuCount_r" min="1024" max="40960" step="1024">
@@ -432,7 +437,7 @@
 <script>
 /* ═══════════════ defaults & fields ═══════════════ */
 const DEF={
-  serverPrice:790000, elec:0.047, rental:7.76, years:5, netPct:0.12, transitMo:0,
+  serverPrice:790000, gpuRentHr:5.06, elec:0.047, rental:7.76, years:5, netPct:0.12, transitMo:0,
   wsShare:0.70, // GPU sales mix: 70% wholesale/contract, 30% on-demand — blends the rental
 
   servers:128, gpus:8, deployMonths:3, leadMonths:2, lockYears:5,
@@ -514,9 +519,13 @@ let GPU=(()=>{
 /* ═══════════════ product definitions ═══════════════ */
 /* each product = a switch preset + default overrides. Engine unchanged. */
 const PRODUCTS=[
-  {id:'taas', name:'Token as a Service', sub:'own GPU fleet, sell inference tokens — usage-metered AI cloud',
-   spv:'Token as a Service', tog:{facility:true, colo:false, debt:true, exit:false}, gpu:true, taas:true,
-   ov:{}},
+  {id:'taas', name:'Token as a Service', sub:'rent GPU capacity from GaaS, sell inference tokens — asset-light',
+   spv:'Token as a Service', tog:{facility:false, colo:false, debt:false, exit:false}, gpu:true, taas:true,
+   // Buys GPU-hours at the wholesale rate instead of buying GPUs. That one price already
+   // carries the hall, the power, the upkeep and the NVIDIA licence, so none of them can
+   // be charged again here — the whole cost base is rent, platform and head office.
+   rentsGpu:true,
+   ov:{gpuRentHr:5.06, years:10, debtPct:0}},
 ];
 let PROD='taas';
 let CUST='domestic'; // VAT customer type: 'domestic' (15%) | 'export' (0%, zero-rated services)
@@ -621,6 +630,11 @@ function compute(p,tog){
   const H=730, N=Math.round(p.years*12), gpus=p.gpus;
   const taxRate=(p.saudiPct!=null)?(p.saudiPct*0.025+(1-p.saudiPct)*0.20):p.tax; // Zakat 2.5% (Saudi/GCC) blended with 20% CIT (foreign)
   const useGpu0=tog._gpu!==false;
+  // Renting capacity rather than owning it: the GPUs are somebody else's asset, so there
+  // is no purchase, no depreciation, no residual, and none of the running costs that
+  // belong to whoever owns the metal.
+  const rentGpu=tog._rentGpu===true;
+  const ownGpu=useGpu0&&!rentGpu;
   // For PropCo-only products (Data Hall / Colo), the "build unit" is colo MW, not GPU servers.
   const target=useGpu0?p.servers:Math.max(1,Math.round(p.coloMW));
   const useDebt=tog.debt, useDecline=tog.decline, useUtil=tog.util, usePhase=tog.phase;
@@ -647,7 +661,7 @@ function compute(p,tog){
   // stand up, but kept out of the O&M base — fees create no plant to maintain.
   // Two distinct scopes: the hall is developed per MW, the fleet is deployed per pod.
   const psFac=useFac?mwIT*(p.psPerMW||0):0;
-  const psGpu=useGpu?(target*gpus)*(p.psPerGpu||0):0;
+  const psGpu=ownGpu?(target*gpus)*(p.psPerGpu||0):0;
   const psTotal=psFac+psGpu;
   const facPerServer=(useFac&&useGpu)?facTotal*(gpuMW/Math.max(mwIT,1e-9))/Math.max(1,target):0;
 
@@ -665,8 +679,8 @@ function compute(p,tog){
   const build=A(),online=A(),capexS=A(),capexN=A(),capexF=A(),capex=A(),cumS=A(),cumN=A(),cumF=A(),util=A(),price=A(),bill=A(),rev=A(),revG=A(),revGm=A(),revC=A(),
         elec=A(),warr=A(),oth=A(),othF=A(),intR=A(),ga=A(),rentx=A(),trans=A(),ar=A(),dwc=A(),feeA=A(),cashopex=A(),deprS=A(),deprN=A(),deprF=A(),depr=A(),ebitda=A(),ebit=A(),
         intCap=A(),intPaid=A(),capexP=A(),deprP=A(),dDraw=A(),dRepay=A(),dInt=A(),dBal=A(),pbt=A(),tax=A(),ni=A(),cfo=A(),capexCf=A(),projFcf=A(),eqFcf=A(),cumEq=A();
-  const totalCapex=(useGpu?target*p.serverPrice*(1+p.netPct):0)+facTotal+psTotal;
-  const netCapex=useGpu?target*p.serverPrice*p.netPct:0;
+  const totalCapex=(ownGpu?target*p.serverPrice*(1+p.netPct):0)+facTotal+psTotal;
+  const netCapex=ownGpu?target*p.serverPrice*p.netPct:0;
   const totalDebt=totalCapex*debtPct;
   // Capitalised construction interest means the balance at conversion is larger than
   // the original commitment, so amortising the commitment leaves a stub outstanding.
@@ -681,8 +695,8 @@ function compute(p,tog){
     } else build[m]=Math.min(target, target*Math.min(m,deployM)/deployM);
     online[m]=(m-lead>=1)?build[m-lead]:0;
     const dBuild=build[m]-build[m-1];
-    capexS[m]=useGpu?dBuild*p.serverPrice:0;
-    capexN[m]=useGpu?dBuild*p.serverPrice*p.netPct:0;
+    capexS[m]=ownGpu?dBuild*p.serverPrice:0;
+    capexN[m]=ownGpu?dBuild*p.serverPrice*p.netPct:0;
     if(road){
       // shell spend spreads evenly over the run-up to first handover
       let f=(m<=shellEnd)?shellTot/shellEnd:0;
@@ -711,30 +725,34 @@ function compute(p,tog){
     const renew=(renewM>0&&m>renewM)?(1+(p.renewUplift||0)):1;
     revC[m]=useColo?coloMW*1000*p.coloRate*(online[m]/target)*Math.pow(1+p.coloEsc,Math.floor((m-1)/12))*occ*renew:0;
     rev[m]=revG[m]+revC[m];
-    elec[m]=useGpu?online[m]*pkEff*p.pue*H*p.elec:0; // colo tenants meter their own power
+    elec[m]=ownGpu?online[m]*pkEff*p.pue*H*p.elec:0; // the wholesale rate already carries power
     warr[m]=(m>Math.round((p.warrantyInclYears||0)*12))?(cumS[m]+cumN[m])*p.warrantyPct/12:0; // OEM warranty bundled in node price for the first warrantyInclYears
     // A GPU fleet's O&M tracks the kit it owns, so a share of capex is the right base.
     // A landlord's tracks megawatts of plant under management — tying it to build cost
     // would make the site more expensive to run purely because it cost more to build.
     const omInfl=Math.pow(1+p.gaInfl,Math.floor((m-1)/12));
-    oth[m]=useGpu?(cumS[m]+cumN[m]+cumF[m])*p.otherPct/12*omInfl
-                 :build[m]*(p.omPerMWYr||0)/12*omInfl;
-    othF[m]=useGpu?cumF[m]*p.otherPct/12*omInfl:oth[m];
+    // renting means somebody else maintains the metal, so this falls to zero rather than
+    // dropping through to the landlord's per-MW rate
+    oth[m]=rentGpu?0
+          :(ownGpu?(cumS[m]+cumN[m]+cumF[m])*p.otherPct/12*omInfl
+                  :build[m]*(p.omPerMWYr||0)/12*omInfl);
+    othF[m]=ownGpu?cumF[m]*p.otherPct/12*omInfl:(rentGpu?0:oth[m]);
     intR[m]=useFac?gpuMW*1000*p.coloRate*(online[m]/target)*Math.pow(1+p.coloEsc,Math.floor((m-1)/12)):0;
     ga[m]=useGA?rev[m]*p.gaPct:0; // company opex + platform, scales with revenue
-    rentx[m]=useFac?(mwIT*p.siteRentPerMW/12):(online[m]*pkEff*p.coloPerKWMo);
+    rentx[m]=rentGpu?bill[m]*(p.gpuRentHr||0)
+            :(useFac?(mwIT*p.siteRentPerMW/12):(online[m]*pkEff*p.coloPerKWMo));
     trans[m]=online[m]>0?p.transitMo:0;
     cashopex[m]=elec[m]+warr[m]+oth[m]+ga[m]+rentx[m]+trans[m];
     ar[m]=useWC?rev[m]*p.arDays/30.4:0;
     dwc[m]=ar[m]-ar[m-1];
-    deprS[m]=Math.min(cumS[m]*(1-p.residualPct)/(p.years*12), Math.max(0,cumS[m]*(1-p.residualPct)-accDeprS)); accDeprS+=deprS[m];
-    deprN[m]=Math.min(cumN[m]*(1-p.netResidualPct)/(p.years*12), Math.max(0,cumN[m]*(1-p.netResidualPct)-accDeprN)); accDeprN+=deprN[m];
+    deprS[m]=ownGpu?Math.min(cumS[m]*(1-p.residualPct)/(p.years*12), Math.max(0,cumS[m]*(1-p.residualPct)-accDeprS)):0; accDeprS+=deprS[m];
+    deprN[m]=ownGpu?Math.min(cumN[m]*(1-p.netResidualPct)/(p.years*12), Math.max(0,cumN[m]*(1-p.netResidualPct)-accDeprN)):0; accDeprN+=deprN[m];
     deprF[m]=useFac?Math.min(cumF[m]/(p.facilityLife*12), Math.max(0,cumF[m]-accDeprF)):0; accDeprF+=deprF[m];
     // the two fee scopes amortise on their own asset's life: the hall's over the
     // facility life, the fleet's over the hold. Gating both on useFac left a leased
     // deployment fee capitalised in cash and never charged to the P&L at all.
     const dPF=useFac?Math.min(psFac/(p.facilityLife*12), Math.max(0,psFac-accDeprP)):0; accDeprP+=dPF;
-    const dPG=useGpu?Math.min(psGpu/((p.gpuLifeYears||p.years)*12), Math.max(0,psGpu-accDeprPG)):0; accDeprPG+=dPG;
+    const dPG=ownGpu?Math.min(psGpu/((p.gpuLifeYears||p.years)*12), Math.max(0,psGpu-accDeprPG)):0; accDeprPG+=dPG;
     deprP[m]=dPF+dPG;
     depr[m]=deprS[m]+deprN[m]+deprF[m]+deprP[m];
     ebitda[m]=rev[m]-cashopex[m];
@@ -770,7 +788,7 @@ function compute(p,tog){
   }
   // target is servers for a GPU fleet but megawatts for a landlord, so this line
   // was valuing 120 MW as if they were 120 servers to resell
-  const servResidual=useGpu?target*p.serverPrice*p.residualPct:0;
+  const servResidual=ownGpu?target*p.serverPrice*p.residualPct:0;
   // The closed form assumed the whole asset was in service from month one, but
   // depreciation accrues as capex is spent across a multi-year build, so it wrote the
   // building down faster on exit than the P&L ever charged. Take the book value the
@@ -829,7 +847,12 @@ function compute(p,tog){
     const facGpuPerServer=useFac?(pkEff/1000)*p.facilityPerMW:0;
     const psGpuPerServer=useFac?(pkEff/1000)*(p.psPerMW||0):0;
     const rentPerServerMo=useFac?(pkEff/1000*p.siteRentPerMW/12):(pkEff*p.coloPerKWMo);
-    cb={depr:p.serverPrice*(1-p.residualPct)/(p.years*12)/ssBill,
+    // Renting: the only per-hour costs are the rent itself and head office. Everything
+    // else on this list belongs to whoever owns the metal, and leaving it here would have
+    // the unit table contradicting the P&L above it.
+    cb=rentGpu?{depr:0,net:0,facility:0,dev:0,elec:0,netpower:0,warr:0,oth:0,
+                rent:(p.gpuRentHr||0), ga:useGA?p.gaPct*baseRental:0}
+      :{depr:p.serverPrice*(1-p.residualPct)/(p.years*12)/ssBill,
             net:(p.serverPrice*p.netPct*(1-p.netResidualPct)/(p.years*12)+p.transitMo/Math.max(1,target))/ssBill,
             facility:useFac?(facGpuPerServer/(p.facilityLife*12))/ssBill:0,
             dev:((useFac?psGpuPerServer/(p.facilityLife*12):0)
@@ -866,7 +889,7 @@ function compute(p,tog){
 
   const peakEquity=Math.max(0,-Math.min(0,...cumEq.slice(1)));
 
-  return {N,useDebt,useFac,useGA,useWC,useExit,useExitCur,useColo,gpuMW,coloMW,roadMW,shellTot,fitTot,totalCapex,servCapex:useGpu?target*p.serverPrice:0,netCapex,facTotal,psTotal,mwIT,facExit,peakDebt,debtEnd,residual,servResidual,totalDebt,termProj,peakEquity,arEnd:ar[N],
+  return {N,useDebt,useFac,useGA,useWC,useExit,useExitCur,useColo,gpuMW,coloMW,roadMW,shellTot,fitTot,totalCapex,servCapex:ownGpu?target*p.serverPrice:0,netCapex,facTotal,psTotal,mwIT,facExit,peakDebt,debtEnd,residual,servResidual,totalDebt,termProj,peakEquity,arEnd:ar[N],
     pIRR,eIRR,projNPV,eqNPV,moic,cashBack:inflow,minDSCR,minICR,totRev,totNI,totEb,
     paybackYears:payM==null?null:payM/12,
     cb,costBasis,margin,marginPct,avgEbMargin,rentMo,useGpu,useTaas,unitPrice,unitStr,
@@ -932,7 +955,7 @@ function dollarTable(o){
     if(o.useFac)rows.push(['Facility',o.cb.facility,CC.facility]);
     // the fleet's deployment fee exists whether or not the hall is owned
     rows.push(['Development fees',o.cb.dev,CC.dev]);
-    rows.push([o.useFac?'Ground rent':'Colo fee',o.cb.rent,CC.rent],['Electricity',o.cb.elec,CC.elec],['Network power',o.cb.netpower,CC.netpower],['GPU &amp; Fabric O&amp;M',o.cb.oth,CC.oth]);
+    rows.push([T._rentGpu?'GPU rent':(o.useFac?'Ground rent':'Colo fee'),o.cb.rent,CC.rent],['Electricity',o.cb.elec,CC.elec],['Network power',o.cb.netpower,CC.netpower],['GPU &amp; Fabric O&amp;M',o.cb.oth,CC.oth]);
     if(o.useGA)rows.push(['Corporate G&amp;A',o.cb.ga,CC.ga]);
   }else{
     rows.push(['Facility depreciation',o.cb.depr,CC.depr],['Development fees',o.cb.dev,CC.dev],['Ground rent',o.cb.rent,CC.rent],['IDC O&amp;M',o.cb.oth,CC.oth]);
@@ -1243,7 +1266,7 @@ function render(){
       ${o.useGpu&&o.yrs.some(y=>y.warr>0)?plRow('Warranty & support',o.yrs.map(y=>-y.warr)):''}
       ${o.yrs.some(y=>y.trans>0)?plRow('Network transit',o.yrs.map(y=>-y.trans)):''}
       ${plRow(o.useGpu?'GPU & Fabric O&M':'IDC O&M',o.yrs.map(y=>-y.oth))}
-      ${o.yrs.some(y=>y.rent>0)?plRow(o.useFac?'Site ground rent':'Colocation fees',o.yrs.map(y=>-y.rent)):''}
+      ${o.yrs.some(y=>y.rent>0)?plRow(T._rentGpu?'GPU rent — to GaaS':(o.useFac?'Site ground rent':'Colocation fees'),o.yrs.map(y=>-y.rent)):''}
       ${o.useGA&&o.yrs.some(y=>y.ga>0)?plRow('Corporate G&A',o.yrs.map(y=>-y.ga)):''}
       ${plRow('EBITDA',o.yrs.map(y=>y.ebitda),true)}
       ${plRow('Depreciation',o.yrs.map(y=>-y.depr))}
@@ -1314,6 +1337,13 @@ function plRow(label,arr,bold){
 
 /* ═══════════════ wiring ═══════════════ */
 const PRIM=[['serverPrice'],['netPct',0.01],['powerKW'],['netPowerKW'],['elec'],['years']];
+function bindGpuRent(){
+  const n=document.getElementById('gpuRentHr'), r=document.getElementById('gpuRentHr_r');
+  if(!n||!r)return;
+  n.value=S.gpuRentHr; r.value=S.gpuRentHr;
+  n.oninput=()=>{let v=parseFloat(n.value); if(isNaN(v)||v<0)v=0; S.gpuRentHr=v; r.value=v; render();};
+  r.oninput=()=>{S.gpuRentHr=parseFloat(r.value); n.value=S.gpuRentHr; render();};
+}
 function bindGpuCount(){
   const n=document.getElementById('gpuCount'),r=document.getElementById('gpuCount_r');
   const g=S.servers*S.gpus;
@@ -1413,10 +1443,10 @@ function syncToggles(){
 function resetAll(){
   S={...DEF, modes:DEF.modes.map(m=>({...m})), roadmap:DEF.roadmap.map(r=>({...r}))};
   T={...TOG};
-  PRIM.forEach(bindPrimary);bindGpuCount();bindColo();bindWsShare();bindToggles();
+  PRIM.forEach(bindPrimary);bindGpuCount();bindGpuRent();bindColo();bindWsShare();bindToggles();
   setProduct(PROD);
 }
-function preset(name){if(name==='saudi'){S.elec=0.047;}PRIM.forEach(bindPrimary);bindGpuCount();bindColo();buildGroup('body_rev',F_REV);buildGroup('body_cost',F_COST);buildGroup('body_fin',F_FIN);render();}
+function preset(name){if(name==='saudi'){S.elec=0.047;}PRIM.forEach(bindPrimary);bindGpuCount();bindGpuRent();bindColo();buildGroup('body_rev',F_REV);buildGroup('body_cost',F_COST);buildGroup('body_fin',F_FIN);render();}
 
 /* ═══════════════ product & model selectors ═══════════════ */
 function renderProdBar(){
@@ -1502,14 +1532,22 @@ function setProduct(id){
   PROD=id;
   T={...T, ...prod.tog};
   T._gpu=prod.gpu;
+  T._rentGpu=prod.rentsGpu===true;
   T._taas=prod.taas===true;
   OV_KEYS.forEach(k=>{if(k in DEF)S[k]=DEF[k];});
   Object.assign(S, prod.ov);
   // show/hide GPU-specific core inputs for PropCo-only products
-  ['serverPrice','gpuCount','netPct','powerKW','netPowerKW','rental','elec'].forEach(k=>{
+  const owns=prod.gpu&&prod.rentsGpu!==true;
+  ['serverPrice','netPct','powerKW','netPowerKW','elec'].forEach(k=>{
+    const el=document.getElementById(k); if(!el)return;
+    const drv=el.closest('.drv'); if(drv)drv.style.display=owns?'':'none';
+  });
+  ['gpuCount','rental'].forEach(k=>{
     const el=document.getElementById(k); if(!el)return;
     const drv=el.closest('.drv'); if(drv)drv.style.display=prod.gpu?'':'none';
   });
+  {const el=document.getElementById('gpuRentHr');
+   const drv=el&&el.closest('.drv'); if(drv)drv.style.display=(prod.rentsGpu===true)?'':'none';}
   const leaseRow=document.getElementById('leaseRow'); if(leaseRow)leaseRow.style.display=prod.gpu?'none':'';
   const occRow=document.getElementById('occRow'); if(occRow)occRow.style.display=prod.gpu?'none':'';
   // TaaS sells tokens, not GPU-hours: swap the rental input for token price + throughput
